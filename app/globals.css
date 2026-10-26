@@ -1,0 +1,53 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-arabic: 'IBM Plex Sans Arabic', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+  background-color: #0A0E14;
+  color: #F1F5F9;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: #0A0E14;
+  color: #F1F5F9;
+  min-height: 100vh;
+  overflow-x: hidden;
+  font-family: var(--font-sans);
+}
+
+[dir="rtl"] body,
+[dir="rtl"] {
+  font-family: var(--font-arabic), var(--font-sans);
+}
+
+::selection {
+  background-color: rgba(76, 224, 210, 0.25);
+  color: #FFFFFF;
+}
+
+/* Custom scrollbar for minimalist engineering feel */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0A0E14;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(76, 224, 210, 0.15);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(76, 224, 210, 0.35);
+}
