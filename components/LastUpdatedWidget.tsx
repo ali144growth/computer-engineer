@@ -53,6 +53,10 @@ export function LastUpdatedWidget({
     );
   }, [latestIso, locale]);
 
+  if (siteMeta.showLastUpdated === false) {
+    return null;
+  }
+
   return (
     <aside
       aria-label={locale === 'en' ? 'Last website update' : 'آخر تحديث للموقع'}
@@ -60,9 +64,7 @@ export function LastUpdatedWidget({
         isSidebarOpen
           ? 'z-10 opacity-0 pointer-events-none scale-95'
           : 'z-30 opacity-100 pointer-events-auto scale-100'
-      } ${
-        isRtl ? 'bottom-24 left-6 sm:bottom-6 sm:left-24' : 'bottom-6 left-6'
-      } transition-all duration-300 max-w-[calc(100vw-3rem)]`}
+      } bottom-6 ${isRtl ? 'right-6' : 'left-6'} transition-all duration-300 max-w-[calc(100vw-6.5rem)]`}
     >
       <div className="flex items-center gap-2.5 px-3.5 py-2 rounded-xl bg-[#0E1520]/85 backdrop-blur-lg border border-[#4CE0D2]/25 shadow-[0_4px_20px_rgba(0,0,0,0.45)]">
         <span className="relative flex h-2.5 w-2.5 shrink-0" aria-hidden="true">

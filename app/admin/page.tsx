@@ -17,6 +17,10 @@ import {
   deleteCvDocument,
   MAX_CV_FILE_SIZE,
 } from '@/lib/cv-store';
+import {
+  useSiteMeta,
+  setShowLastUpdated,
+} from '@/lib/site-meta-store';
 import { CircuitBackground } from '@/components/CircuitBackground';
 import {
   Plus,
@@ -157,15 +161,36 @@ export default function AdminPage() {
   const [projectImageUploading, setProjectImageUploading] = useState(false);
   const [projectImageDragActive, setProjectImageDragActive] = useState(false);
   const [isSavingProject, setIsSavingProject] = useState(false);
+  const [isDeletingProject, setIsDeletingProject] = useState(false);
 
   // CV Document Upload State
   const cvDoc = useCv();
   const cvFileInputRef = useRef<HTMLInputElement | null>(null);
   const [cvDragActive, setCvDragActive] = useState(false);
   const [cvUploading, setCvUploading] = useState(false);
+  const [cvRemoving, setCvRemoving] = useState(false);
   const [cvError, setCvError] = useState<string | null>(null);
   const [cvSuccess, setCvSuccess] = useState<string | null>(null);
   const [isPreviewingCv, setIsPreviewingCv] = useState(false);
+
+  // Site Widget Visibility State
+  const siteMeta = useSiteMeta();
+  const showLastUpdated = siteMeta.showLastUpdated !== false;
+  const [togglingWidget, setTogglingWidget] = useState(false);
+
+  // Projects Table Top Scrollbar Sync (for small screens)
+  const topScrollRef = useRef<HTMLDivElement | null>(null);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
+  const syncSourceRef = useRef<'top' | 'table' | null>(null);
+  const syncRafRef = useRef<number | null>(null);
+  const [tableOverflow, setTableOverflow] = useState<{
+    hasOverflow: boolean;
+    scrollWidth: number;
+  }>({
+    hasOverflow: false,
+    scrollWidth: 0,
+  });
 
   // Sync document dir and lang
   useEffect(() => {
@@ -333,14 +358,18 @@ export default function AdminPage() {
   };
 
   const handleDeleteConfirm = async () => {
-    if (deletingProject) {
-      try {
-        await deleteStoredProject(deletingProject.id);
-      } catch (err) {
-        console.warn('Delete project failed:', err);
-      } finally {
-        setDeletingProject(null);
-      }
+    if (!deletingProject) return;
+    setIsDeletingProject(true);
+    try {
+      await Promise.all([
+        deleteStoredProject(deletingProject.id),
+        new Promise((resolve) => setTimeout(resolve, 250)),
+      ]);
+      setDeletingProject(null);
+    } catch (err) {
+      console.warn('Delete project failed:', err);
+    } finally {
+      setIsDeletingProject(false);
     }
   };
 
@@ -362,6 +391,73 @@ export default function AdminPage() {
   }, [filteredProjects, visibleCount]);
 
   const hasMore = visibleCount < filteredProjects.length;
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const scrollEl = tableScrollRef.current;
+    const tableEl = tableRef.current;
+    if (!scrollEl || !tableEl) return;
+
+    const updateMetrics = () => {
+      const scrollWidth = scrollEl.scrollWidth;
+      const clientWidth = scrollEl.clientWidth;
+      const hasOverflow = scrollWidth > clientWidth + 1;
+      setTableOverflow((prev) =>
+        prev.hasOverflow === hasOverflow && prev.scrollWidth === scrollWidth
+          ? prev
+          : { hasOverflow, scrollWidth }
+      );
+      if (topScrollRef.current && topScrollRef.current.scrollLeft !== scrollEl.scrollLeft) {
+        topScrollRef.current.scrollLeft = scrollEl.scrollLeft;
+      }
+    };
+
+    updateMetrics();
+
+    const observer = new ResizeObserver(updateMetrics);
+    observer.observe(scrollEl);
+    observer.observe(tableEl);
+    window.addEventListener('resize', updateMetrics);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateMetrics);
+    };
+  }, [isAuthenticated, locale, displayedProjects.length, searchQuery]);
+
+  useEffect(() => {
+    return () => {
+      if (syncRafRef.current !== null) {
+        cancelAnimationFrame(syncRafRef.current);
+      }
+    };
+  }, []);
+
+  const handleTopScroll = () => {
+    if (syncSourceRef.current === 'table') return;
+    const topEl = topScrollRef.current;
+    const tableEl = tableScrollRef.current;
+    if (!topEl || !tableEl) return;
+    syncSourceRef.current = 'top';
+    tableEl.scrollLeft = topEl.scrollLeft;
+    if (syncRafRef.current !== null) cancelAnimationFrame(syncRafRef.current);
+    syncRafRef.current = requestAnimationFrame(() => {
+      syncSourceRef.current = null;
+    });
+  };
+
+  const handleTableScroll = () => {
+    if (syncSourceRef.current === 'top') return;
+    const topEl = topScrollRef.current;
+    const tableEl = tableScrollRef.current;
+    if (!topEl || !tableEl) return;
+    syncSourceRef.current = 'table';
+    topEl.scrollLeft = tableEl.scrollLeft;
+    if (syncRafRef.current !== null) cancelAnimationFrame(syncRafRef.current);
+    syncRafRef.current = requestAnimationFrame(() => {
+      syncSourceRef.current = null;
+    });
+  };
 
   const handleLoadMore = () => {
     setVisibleCount((prev) => prev + 10);
@@ -429,8 +525,12 @@ export default function AdminPage() {
   const handleRemoveCv = async () => {
     setCvError(null);
     setCvSuccess(null);
+    setCvRemoving(true);
     try {
-      await deleteCvDocument();
+      await Promise.all([
+        deleteCvDocument(),
+        new Promise((resolve) => setTimeout(resolve, 250)),
+      ]);
       setCvSuccess(
         locale === 'en' ? 'CV document removed.' : 'تم حذف السيرة الذاتية.'
       );
@@ -440,6 +540,19 @@ export default function AdminPage() {
           ? 'Could not remove the CV file. Please try again.'
           : 'تعذر حذف السيرة الذاتية. يرجى المحاولة مرة أخرى.'
       );
+    } finally {
+      setCvRemoving(false);
+    }
+  };
+
+  const handleToggleLastUpdatedWidget = async () => {
+    setTogglingWidget(true);
+    try {
+      await setShowLastUpdated(!showLastUpdated);
+    } catch (err) {
+      console.warn('Failed to toggle Last Updated widget:', err);
+    } finally {
+      setTogglingWidget(false);
     }
   };
 
@@ -681,25 +794,71 @@ export default function AdminPage() {
 
       {/* Main Content Area */}
       <main className="relative z-10 max-w-7xl mx-auto px-6 py-8 md:py-12 space-y-8">
-        {/* Top Header Row with Actions */}
+        {/* Top Header Row */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
               {locale === 'en' ? 'Portfolio Projects' : 'مشاريع ملف الأعمال'}
             </h1>
           </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={openCreateModal}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#4CE0D2] text-[#0A0E14] font-medium text-xs sm:text-sm hover:bg-[#3ec4b7] transition-all shadow-[0_0_20px_rgba(76,224,210,0.25)] cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>{locale === 'en' ? 'Add New Project' : 'إضافة مشروع جديد'}</span>
-            </button>
-          </div>
         </div>
+
+        {/* Last Updated Widget Visibility Toggle */}
+        <section className="bg-[#0E1520]/70 backdrop-blur-lg border border-[#4CE0D2]/20 rounded-2xl p-4 sm:px-6 sm:py-4 shadow-[0_8px_32px_rgba(0,0,0,0.4)] flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-slate-900/80 border border-[#4CE0D2]/25 shrink-0">
+              <span
+                className={`inline-block w-2.5 h-2.5 rounded-full transition-colors ${
+                  showLastUpdated
+                    ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]'
+                    : 'bg-slate-500'
+                }`}
+              />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-sm sm:text-base font-semibold text-white">
+                {locale === 'en' ? 'Last Updated Widget' : 'ويدجت آخر تحديث'}
+              </h2>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={showLastUpdated}
+            aria-label={locale === 'en' ? 'Toggle Last Updated widget' : 'إظهار أو إخفاء ويدجت آخر تحديث'}
+            disabled={togglingWidget}
+            onClick={handleToggleLastUpdatedWidget}
+            className="inline-flex items-center gap-2.5 px-3.5 py-2 rounded-lg bg-slate-900/70 border border-[#4CE0D2]/25 hover:border-[#4CE0D2] transition-all cursor-pointer disabled:opacity-60 shrink-0"
+          >
+            {togglingWidget ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#4CE0D2]" />
+            ) : (
+              <span
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                  showLastUpdated ? 'bg-[#4CE0D2]' : 'bg-slate-700'
+                }`}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 rounded-full bg-[#0A0E14] transition-transform ${
+                    showLastUpdated
+                      ? locale === 'ar'
+                        ? '-translate-x-4.5'
+                        : 'translate-x-4.5'
+                      : locale === 'ar'
+                        ? '-translate-x-1'
+                        : 'translate-x-1'
+                  }`}
+                />
+              </span>
+            )}
+            <span className="text-xs font-medium text-slate-200">
+              {showLastUpdated
+                ? locale === 'en' ? 'Shown' : 'ظاهر'
+                : locale === 'en' ? 'Hidden' : 'مخفي'}
+            </span>
+          </button>
+        </section>
 
         {/* CV Document Upload Section */}
         <section className="bg-[#0E1520]/70 backdrop-blur-lg border border-[#4CE0D2]/20 rounded-2xl p-5 sm:p-6 shadow-[0_8px_32px_rgba(0,0,0,0.4)] space-y-4">
@@ -797,11 +956,16 @@ export default function AdminPage() {
 
                 <button
                   type="button"
+                  disabled={cvRemoving}
                   onClick={handleRemoveCv}
                   title={locale === 'en' ? 'Remove CV' : 'حذف السيرة الذاتية'}
-                  className="p-1.5 rounded-lg text-red-400 hover:text-red-200 bg-red-950/20 hover:bg-red-950/40 border border-transparent hover:border-red-500/30 transition-all cursor-pointer"
+                  className="p-1.5 rounded-lg text-red-400 hover:text-red-200 bg-red-950/20 hover:bg-red-950/40 border border-transparent hover:border-red-500/30 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  {cvRemoving ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
                 </button>
               </div>
             </div>
@@ -853,9 +1017,18 @@ export default function AdminPage() {
           )}
         </section>
 
-        {/* Filter and Search Bar */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 bg-slate-900/40 backdrop-blur-lg border border-[#4CE0D2]/15 p-3 rounded-xl">
-          <div className="relative flex-1">
+        {/* Filter, Search Bar & Add New Project */}
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 sm:gap-4 bg-slate-900/40 backdrop-blur-lg border border-[#4CE0D2]/15 p-3 rounded-xl">
+          <button
+            type="button"
+            onClick={openCreateModal}
+            className="order-1 lg:order-2 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#4CE0D2] text-[#0A0E14] font-medium text-xs sm:text-sm hover:bg-[#3ec4b7] transition-all shadow-[0_0_20px_rgba(76,224,210,0.2)] cursor-pointer shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            <span>{locale === 'en' ? 'Add New Project' : 'إضافة مشروع جديد'}</span>
+          </button>
+
+          <div className="relative flex-1 order-2 lg:order-1">
             <Search className="w-4 h-4 absolute inset-y-0 start-3 my-auto text-slate-400" />
             <input
               type="text"
@@ -873,7 +1046,7 @@ export default function AdminPage() {
             />
           </div>
 
-          <div className="flex items-center gap-2 text-xs text-slate-400 px-2 shrink-0">
+          <div className="order-3 flex items-center gap-2 text-xs text-slate-400 px-2 shrink-0">
             <span>
               {locale === 'en'
                 ? `Showing ${Math.min(displayedProjects.length, filteredProjects.length)} of ${filteredProjects.length}`
@@ -884,8 +1057,26 @@ export default function AdminPage() {
 
         {/* Projects Table Card */}
         <div className="bg-[#0E1520]/70 backdrop-blur-lg border border-[#4CE0D2]/20 rounded-2xl overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
-          <div className="overflow-x-auto">
-            <table className="w-full text-start border-collapse text-xs sm:text-sm">
+          {/* Top horizontal scrollbar on small screens (before the rows) */}
+          {tableOverflow.hasOverflow && (
+            <div
+              ref={topScrollRef}
+              onScroll={handleTopScroll}
+              aria-hidden="true"
+              className="lg:hidden overflow-x-auto overflow-y-hidden border-b border-[#4CE0D2]/15 bg-slate-900/60 [scrollbar-width:thin] [scrollbar-color:rgba(76,224,210,0.3)_rgba(15,23,42,0.6)] [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-slate-900/60 [&::-webkit-scrollbar-thumb]:bg-[#4CE0D2]/30 hover:[&::-webkit-scrollbar-thumb]:bg-[#4CE0D2]/50"
+            >
+              <div
+                style={{ width: `${tableOverflow.scrollWidth}px`, height: '1px' }}
+              />
+            </div>
+          )}
+
+          <div
+            ref={tableScrollRef}
+            onScroll={handleTableScroll}
+            className="overflow-x-auto max-lg:[scrollbar-width:none] max-lg:[-ms-overflow-style:none] max-lg:[&::-webkit-scrollbar]:hidden"
+          >
+            <table ref={tableRef} className="w-full text-start border-collapse text-xs sm:text-sm">
               <thead>
                 <tr className="border-b border-[#4CE0D2]/15 bg-slate-900/60 text-slate-300 font-medium text-xs">
                   <th className="py-3.5 px-4 sm:px-6 text-start">
@@ -1314,7 +1505,9 @@ export default function AdminPage() {
         >
           <div
             className="fixed inset-0 bg-[#0A0E14]/85 backdrop-blur-md"
-            onClick={() => setDeletingProject(null)}
+            onClick={() => {
+              if (!isDeletingProject) setDeletingProject(null);
+            }}
           />
           <div className="relative w-full max-w-md bg-[#0E1520] border border-red-500/30 rounded-2xl p-6 shadow-2xl z-10 space-y-4">
             <h3 className="text-lg font-semibold text-white">
@@ -1328,17 +1521,24 @@ export default function AdminPage() {
             <div className="pt-2 flex items-center justify-end gap-3">
               <button
                 type="button"
+                disabled={isDeletingProject}
                 onClick={() => setDeletingProject(null)}
-                className="px-4 py-2 text-xs sm:text-sm font-medium text-slate-300 bg-slate-900 border border-slate-700 rounded-lg cursor-pointer"
+                className="px-4 py-2 text-xs sm:text-sm font-medium text-slate-300 bg-slate-900 border border-slate-700 rounded-lg cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {locale === 'en' ? 'Cancel' : 'إلغاء'}
               </button>
               <button
                 type="button"
+                disabled={isDeletingProject}
                 onClick={handleDeleteConfirm}
-                className="px-4 py-2 text-xs sm:text-sm font-medium text-white bg-red-600 hover:bg-red-500 rounded-lg transition-colors cursor-pointer"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs sm:text-sm font-medium text-white bg-red-600 hover:bg-red-500 rounded-lg transition-colors cursor-pointer disabled:opacity-70 disabled:cursor-not-allowed"
               >
-                {locale === 'en' ? 'Delete' : 'تأكيد الحذف'}
+                {isDeletingProject && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>
+                  {isDeletingProject
+                    ? locale === 'en' ? 'Deleting...' : 'جاري الحذف...'
+                    : locale === 'en' ? 'Delete' : 'تأكيد الحذف'}
+                </span>
               </button>
             </div>
           </div>

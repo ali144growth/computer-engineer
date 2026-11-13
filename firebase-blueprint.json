@@ -82,13 +82,17 @@
     },
     "SiteMeta": {
       "title": "SiteMeta",
-      "description": "Metadata tracking the last time the portfolio website content was updated.",
+      "description": "Metadata tracking the last time the portfolio website content was updated and widget visibility.",
       "type": "object",
       "properties": {
         "updatedAt": {
           "type": "string",
           "maxLength": 64,
           "description": "ISO timestamp of the latest portfolio update"
+        },
+        "showLastUpdated": {
+          "type": "boolean",
+          "description": "Whether the floating last-updated widget is visible on the portfolio"
         }
       },
       "required": ["updatedAt"]
