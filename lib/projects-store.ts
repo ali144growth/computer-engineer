@@ -1,4 +1,14 @@
+import { useSyncExternalStore } from 'react';
 import { Project } from './portfolio-data';
+import {
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+  getDocs,
+} from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType, testConnection } from './firebase';
 
 export interface StoredProject extends Project {
   createdAt?: string; // ISO date string for sorting newest first
@@ -205,6 +215,39 @@ export const INITIAL_PROJECTS: StoredProject[] = [
 
 const STORAGE_KEY = 'ce_portfolio_projects_v1';
 const EVENT_NAME = 'ce_portfolio_projects_updated';
+const FIRESTORE_COLLECTION = 'projects';
+
+function docToProject(data: Record<string, unknown>, id: string): StoredProject {
+  return {
+    id: (data.id as string) || id,
+    title: {
+      en: (data.titleEn as string) || '',
+      ar: (data.titleAr as string) || (data.titleEn as string) || '',
+    },
+    image: (data.image as string) || '/images/smart-lock.jpg',
+    tag: (data.tag as string) || '',
+    description: {
+      en: (data.descriptionEn as string) || '',
+      ar: (data.descriptionAr as string) || (data.descriptionEn as string) || '',
+    },
+    createdAt: (data.createdAt as string) || new Date().toISOString(),
+  };
+}
+
+function projectToDoc(project: StoredProject): Record<string, unknown> {
+  return {
+    id: project.id,
+    titleEn: project.title.en,
+    titleAr: project.title.ar,
+    image: project.image,
+    descriptionEn: project.description.en,
+    descriptionAr: project.description.ar,
+    createdAt: project.createdAt || new Date().toISOString(),
+  };
+}
+
+let cachedProjects: StoredProject[] = INITIAL_PROJECTS;
+let cachedRaw: string = '';
 
 export function getStoredProjects(): StoredProject[] {
   if (typeof window === 'undefined') {
@@ -213,43 +256,99 @@ export function getStoredProjects(): StoredProject[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_PROJECTS));
+      const initJson = JSON.stringify(INITIAL_PROJECTS);
+      localStorage.setItem(STORAGE_KEY, initJson);
+      cachedRaw = initJson;
+      cachedProjects = INITIAL_PROJECTS;
       return INITIAL_PROJECTS;
+    }
+    if (raw === cachedRaw && cachedProjects) {
+      return cachedProjects;
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
+      cachedRaw = raw;
+      cachedProjects = parsed;
       return parsed;
     }
     return INITIAL_PROJECTS;
-  } catch (err) {
-    console.error('Error loading projects from storage:', err);
+  } catch {
     return INITIAL_PROJECTS;
   }
 }
 
-export function saveStoredProjects(projects: StoredProject[]): void {
+export function getServerProjects(): StoredProject[] {
+  return INITIAL_PROJECTS;
+}
+
+export function saveLocalProjects(projects: StoredProject[]): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+    const raw = JSON.stringify(projects);
+    cachedRaw = raw;
+    cachedProjects = projects;
+    localStorage.setItem(STORAGE_KEY, raw);
     window.dispatchEvent(new Event(EVENT_NAME));
   } catch (err) {
-    console.error('Error saving projects to storage:', err);
+    console.error('Error saving local projects:', err);
   }
 }
 
-export function addStoredProject(newProject: Omit<StoredProject, 'id' | 'createdAt'>): StoredProject {
-  const current = getStoredProjects();
+export function useProjects(): StoredProject[] {
+  return useSyncExternalStore(
+    subscribeProjects,
+    getStoredProjects,
+    getServerProjects
+  );
+}
+
+// Synchronize initial projects to Firestore if empty
+let isFirestoreSeeded = false;
+async function seedFirestoreIfNeeded(): Promise<void> {
+  if (isFirestoreSeeded || typeof window === 'undefined') return;
+  isFirestoreSeeded = true;
+  try {
+    await testConnection();
+    const snap = await getDocs(collection(db, FIRESTORE_COLLECTION));
+    if (snap.empty) {
+      // Seed initial sample projects
+      for (const p of INITIAL_PROJECTS) {
+        await setDoc(doc(db, FIRESTORE_COLLECTION, p.id), projectToDoc(p));
+      }
+    }
+  } catch (error) {
+    console.warn('Firestore initial seeding deferred:', error);
+  }
+}
+
+export async function addStoredProject(
+  newProject: Omit<StoredProject, 'id' | 'createdAt'>
+): Promise<StoredProject> {
   const created: StoredProject = {
     ...newProject,
     id: `project-${Date.now()}`,
     createdAt: new Date().toISOString(),
   };
-  const updated = [created, ...current];
-  saveStoredProjects(updated);
+
+  // Optimistic local update
+  const current = getStoredProjects();
+  saveLocalProjects([created, ...current]);
+
+  // Firestore persistent write
+  try {
+    const docRef = doc(db, FIRESTORE_COLLECTION, created.id);
+    await setDoc(docRef, projectToDoc(created));
+  } catch (err) {
+    console.error('Firestore add error, falling back locally:', err);
+  }
+
   return created;
 }
 
-export function updateStoredProject(id: string, updates: Partial<StoredProject>): StoredProject | null {
+export async function updateStoredProject(
+  id: string,
+  updates: Partial<StoredProject>
+): Promise<StoredProject | null> {
   const current = getStoredProjects();
   const index = current.findIndex((p) => p.id === id);
   if (index === -1) return null;
@@ -257,34 +356,86 @@ export function updateStoredProject(id: string, updates: Partial<StoredProject>)
   const updatedProject: StoredProject = {
     ...current[index],
     ...updates,
-    id: current[index].id, // preserve ID
+    id: current[index].id,
   };
+
   current[index] = updatedProject;
-  saveStoredProjects([...current]);
+  saveLocalProjects([...current]);
+
+  // Firestore update
+  try {
+    const docRef = doc(db, FIRESTORE_COLLECTION, id);
+    await setDoc(docRef, projectToDoc(updatedProject), { merge: true });
+  } catch (err) {
+    console.error('Firestore update error, falling back locally:', err);
+  }
+
   return updatedProject;
 }
 
-export function deleteStoredProject(id: string): boolean {
+export async function deleteStoredProject(id: string): Promise<boolean> {
   const current = getStoredProjects();
   const filtered = current.filter((p) => p.id !== id);
   if (filtered.length === current.length) return false;
-  saveStoredProjects(filtered);
+
+  saveLocalProjects(filtered);
+
+  // Firestore delete
+  try {
+    const docRef = doc(db, FIRESTORE_COLLECTION, id);
+    await deleteDoc(docRef);
+  } catch (err) {
+    console.error('Firestore delete error, falling back locally:', err);
+  }
+
   return true;
 }
 
-export function resetStoredProjects(): void {
-  saveStoredProjects(INITIAL_PROJECTS);
-}
-
-export function subscribeProjects(callback: () => void): () => void {
+// Subscribe to both Firestore real-time snapshots and local multi-tab events
+export function subscribeProjects(callback: (projects?: StoredProject[]) => void): () => void {
   if (typeof window === 'undefined') return () => {};
 
-  const handleUpdate = () => callback();
-  window.addEventListener(EVENT_NAME, handleUpdate);
-  window.addEventListener('storage', handleUpdate);
+  // Seed on client boot
+  seedFirestoreIfNeeded();
+
+  // Local event listener
+  const handleLocalUpdate = () => callback(getStoredProjects());
+  window.addEventListener(EVENT_NAME, handleLocalUpdate);
+  window.addEventListener('storage', handleLocalUpdate);
+
+  // Firestore real-time listener
+  let unsubscribeFirestore = () => {};
+  try {
+    const projectsCol = collection(db, FIRESTORE_COLLECTION);
+    unsubscribeFirestore = onSnapshot(
+      projectsCol,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteProjects: StoredProject[] = [];
+          snapshot.forEach((d) => {
+            remoteProjects.push(docToProject(d.data(), d.id));
+          });
+          // Sort newest first
+          remoteProjects.sort((a, b) => {
+            const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return timeB - timeA;
+          });
+          saveLocalProjects(remoteProjects);
+          callback(remoteProjects);
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, FIRESTORE_COLLECTION);
+      }
+    );
+  } catch {
+    // Client offline or permission check
+  }
 
   return () => {
-    window.removeEventListener(EVENT_NAME, handleUpdate);
-    window.removeEventListener('storage', handleUpdate);
+    window.removeEventListener(EVENT_NAME, handleLocalUpdate);
+    window.removeEventListener('storage', handleLocalUpdate);
+    unsubscribeFirestore();
   };
 }

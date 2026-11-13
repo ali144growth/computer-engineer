@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import Image from 'next/image';
 import { Project, Locale, portfolioData } from '@/lib/portfolio-data';
-import { getStoredProjects, subscribeProjects } from '@/lib/projects-store';
+import { useProjects } from '@/lib/projects-store';
 import { Plus } from 'lucide-react';
 
 interface WorkSectionProps {
@@ -13,14 +13,7 @@ interface WorkSectionProps {
 
 export function WorkSection({ locale, onSelectProject }: WorkSectionProps) {
   const content = portfolioData.work;
-  const [projects, setProjects] = useState<Project[]>(() => getStoredProjects());
-
-  useEffect(() => {
-    const unsubscribe = subscribeProjects(() => {
-      setProjects(getStoredProjects());
-    });
-    return unsubscribe;
-  }, []);
+  const projects = useProjects();
 
   return (
     <section id="work" className="relative w-full max-w-6xl mx-auto px-6 py-20 md:py-28">

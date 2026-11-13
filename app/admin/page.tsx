@@ -1,18 +1,22 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { Locale } from '@/lib/portfolio-data';
 import {
   StoredProject,
-  getStoredProjects,
   addStoredProject,
   updateStoredProject,
   deleteStoredProject,
-  resetStoredProjects,
-  subscribeProjects,
+  useProjects,
 } from '@/lib/projects-store';
+import {
+  useCv,
+  saveCvDocument,
+  deleteCvDocument,
+  MAX_CV_FILE_SIZE,
+} from '@/lib/cv-store';
 import { CircuitBackground } from '@/components/CircuitBackground';
 import {
   Plus,
@@ -24,45 +28,104 @@ import {
   ArrowRight,
   Globe,
   Search,
-  Lock,
   Mail,
   KeyRound,
-  Check,
-  RotateCcw,
   X,
   ExternalLink,
+  FileText,
+  Upload,
+  Download,
+  CheckCircle2,
+  Image as ImageIcon,
 } from 'lucide-react';
 
 const AUTH_STORAGE_KEY = 'ce_admin_logged_in';
+const AUTH_EVENT = 'ce_admin_auth_event';
 const DEFAULT_ADMIN_EMAIL = 'admin@mansoor.ce';
 const DEFAULT_ADMIN_PASS = 'admin123';
 
-const IMAGE_PRESETS = [
-  { label: 'Smart Lock / Access Control', url: '/images/smart-lock.jpg' },
-  { label: 'Network Gateway / Ad Blocker', url: '/images/network-adblock.jpg' },
-  { label: 'Home Cloud / NAS Storage', url: '/images/nas-storage.jpg' },
-  { label: 'IoT Environmental Sensor', url: '/images/iot-monitor.jpg' },
-];
+function getAuthSnapshot(): boolean {
+  if (typeof window === 'undefined') return false;
+  return sessionStorage.getItem(AUTH_STORAGE_KEY) === 'true';
+}
 
-const TAG_PRESETS = [
-  '#embedded',
-  '#networking',
-  '#systems',
-  '#iot',
-  '#hardware',
-  '#dsp',
-  '#security',
-  '#fpga',
-];
+function getServerAuthSnapshot(): boolean {
+  return false;
+}
+
+function subscribeAuth(callback: () => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  window.addEventListener('storage', callback);
+  window.addEventListener(AUTH_EVENT, callback);
+  return () => {
+    window.removeEventListener('storage', callback);
+    window.removeEventListener(AUTH_EVENT, callback);
+  };
+}
+
+const MAX_PROJECT_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB raw upload limit
+
+function compressImageToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('READ_FAILED'));
+        return;
+      }
+
+      const img = new window.Image();
+      img.onload = () => {
+        const maxWidth = 1200;
+        const maxHeight = 900;
+        let { width, height } = img;
+
+        if (width > maxWidth || height > maxHeight) {
+          const ratio = Math.min(maxWidth / width, maxHeight / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(result);
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Try JPEG compression so any uploaded image fits safely inside Firestore 1 MiB document limits
+        let quality = 0.85;
+        let dataUrl = canvas.toDataURL('image/jpeg', quality);
+        while (dataUrl.length > 900000 && quality > 0.35) {
+          quality -= 0.1;
+          dataUrl = canvas.toDataURL('image/jpeg', quality);
+        }
+
+        if (dataUrl.length > 1000000) {
+          reject(new Error('IMAGE_TOO_LARGE'));
+          return;
+        }
+
+        resolve(dataUrl);
+      };
+      img.onerror = () => reject(new Error('INVALID_IMAGE'));
+      img.src = result;
+    };
+    reader.onerror = () => reject(new Error('READ_FAILED'));
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function AdminPage() {
   const [locale, setLocale] = useState<Locale>('en');
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      return sessionStorage.getItem(AUTH_STORAGE_KEY) === 'true';
-    }
-    return false;
-  });
+  const isSessionAuth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getServerAuthSnapshot);
+  const [localAuth, setLocalAuth] = useState(false);
+  const isAuthenticated = isSessionAuth || localAuth;
 
   // Sign In Form States
   const [emailInput, setEmailInput] = useState(DEFAULT_ADMIN_EMAIL);
@@ -70,8 +133,8 @@ export default function AdminPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Projects State
-  const [projects, setProjects] = useState<StoredProject[]>(() => getStoredProjects());
+  // Projects State from centralized useProjects hook (useSyncExternalStore)
+  const projects = useProjects();
   const [visibleCount, setVisibleCount] = useState<number>(10);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -84,19 +147,23 @@ export default function AdminPage() {
   // Form Fields
   const [formTitleEn, setFormTitleEn] = useState('');
   const [formTitleAr, setFormTitleAr] = useState('');
-  const [formTag, setFormTag] = useState('#embedded');
-  const [formImage, setFormImage] = useState('/images/smart-lock.jpg');
+  const [formImage, setFormImage] = useState('');
   const [formDescEn, setFormDescEn] = useState('');
   const [formDescAr, setFormDescAr] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const projectImageInputRef = useRef<HTMLInputElement | null>(null);
+  const [projectImageName, setProjectImageName] = useState('');
+  const [projectImageUploading, setProjectImageUploading] = useState(false);
+  const [projectImageDragActive, setProjectImageDragActive] = useState(false);
 
-  // Subscribe to projects store updates
-  useEffect(() => {
-    const unsubscribe = subscribeProjects(() => {
-      setProjects(getStoredProjects());
-    });
-    return unsubscribe;
-  }, []);
+  // CV Document Upload State
+  const cvDoc = useCv();
+  const cvFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [cvDragActive, setCvDragActive] = useState(false);
+  const [cvUploading, setCvUploading] = useState(false);
+  const [cvError, setCvError] = useState<string | null>(null);
+  const [cvSuccess, setCvSuccess] = useState<string | null>(null);
+  const [isPreviewingCv, setIsPreviewingCv] = useState(false);
 
   // Sync document dir and lang
   useEffect(() => {
@@ -121,20 +188,22 @@ export default function AdminPage() {
 
     // Success login
     sessionStorage.setItem(AUTH_STORAGE_KEY, 'true');
-    setIsAuthenticated(true);
+    window.dispatchEvent(new Event(AUTH_EVENT));
+    setLocalAuth(true);
   };
 
   const handleSignOut = () => {
     sessionStorage.removeItem(AUTH_STORAGE_KEY);
-    setIsAuthenticated(false);
+    window.dispatchEvent(new Event(AUTH_EVENT));
+    setLocalAuth(false);
   };
 
   const openCreateModal = () => {
     setEditingProject(null);
     setFormTitleEn('');
     setFormTitleAr('');
-    setFormTag('#embedded');
-    setFormImage('/images/smart-lock.jpg');
+    setFormImage('');
+    setProjectImageName('');
     setFormDescEn('');
     setFormDescAr('');
     setFormError(null);
@@ -145,15 +214,75 @@ export default function AdminPage() {
     setEditingProject(project);
     setFormTitleEn(project.title.en);
     setFormTitleAr(project.title.ar);
-    setFormTag(project.tag);
     setFormImage(project.image);
+    setProjectImageName('');
     setFormDescEn(project.description.en);
     setFormDescAr(project.description.ar);
     setFormError(null);
     setIsModalOpen(true);
   };
 
-  const handleSaveProject = (e: React.FormEvent) => {
+  const processProjectImageFile = async (file: File | undefined | null) => {
+    if (!file) return;
+    setFormError(null);
+
+    const allowedExtensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
+    const lowerName = file.name.toLowerCase();
+    const isImageType =
+      file.type.startsWith('image/') ||
+      allowedExtensions.some((ext) => lowerName.endsWith(ext));
+
+    if (!isImageType) {
+      setFormError(
+        locale === 'en'
+          ? 'Unsupported image format. Please upload a PNG, JPG, WEBP, or GIF image.'
+          : 'صيغة الصورة غير مدعومة. يرجى رفع صورة بصيغة PNG أو JPG أو WEBP أو GIF.'
+      );
+      return;
+    }
+
+    if (file.size > MAX_PROJECT_IMAGE_BYTES) {
+      setFormError(
+        locale === 'en'
+          ? 'Image file is too large. Please upload an image under 5 MB.'
+          : 'حجم الصورة كبير جداً. يرجى اختيار صورة أقل من 5 ميجابايت.'
+      );
+      return;
+    }
+
+    setProjectImageUploading(true);
+    try {
+      const dataUrl = await compressImageToDataUrl(file);
+      setFormImage(dataUrl);
+      setProjectImageName(file.name);
+    } catch {
+      setFormError(
+        locale === 'en'
+          ? 'Could not process the selected image. Please try another image.'
+          : 'تعذر معالجة الصورة المختارة. يرجى تجربة صورة أخرى.'
+      );
+    } finally {
+      setProjectImageUploading(false);
+      if (projectImageInputRef.current) {
+        projectImageInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleProjectImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    void processProjectImageFile(file);
+  };
+
+  const handleProjectImageDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setProjectImageDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    void processProjectImageFile(file);
+  };
+
+  const handleSaveProject = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -162,13 +291,17 @@ export default function AdminPage() {
       return;
     }
 
+    if (!formImage.trim()) {
+      setFormError(locale === 'en' ? 'Please upload a project image.' : 'يرجى رفع صورة للمشروع.');
+      return;
+    }
+
     const payload = {
       title: {
         en: formTitleEn.trim(),
         ar: formTitleAr.trim() || formTitleEn.trim(),
       },
-      tag: formTag.trim().startsWith('#') ? formTag.trim() : `#${formTag.trim()}`,
-      image: formImage.trim() || '/images/smart-lock.jpg',
+      image: formImage.trim(),
       description: {
         en: formDescEn.trim(),
         ar: formDescAr.trim() || formDescEn.trim(),
@@ -176,25 +309,18 @@ export default function AdminPage() {
     };
 
     if (editingProject) {
-      updateStoredProject(editingProject.id, payload);
+      await updateStoredProject(editingProject.id, payload);
     } else {
-      addStoredProject(payload);
+      await addStoredProject(payload);
     }
 
     setIsModalOpen(false);
   };
 
-  const handleDeleteConfirm = () => {
+  const handleDeleteConfirm = async () => {
     if (deletingProject) {
-      deleteStoredProject(deletingProject.id);
+      await deleteStoredProject(deletingProject.id);
       setDeletingProject(null);
-    }
-  };
-
-  const handleResetDefaults = () => {
-    if (window.confirm(locale === 'en' ? 'Reset all projects back to default portfolio state?' : 'استعادة جميع المشاريع للحالة الافتراضية؟')) {
-      resetStoredProjects();
-      setVisibleCount(10);
     }
   };
 
@@ -206,7 +332,6 @@ export default function AdminPage() {
       (p) =>
         p.title.en.toLowerCase().includes(q) ||
         p.title.ar.toLowerCase().includes(q) ||
-        p.tag.toLowerCase().includes(q) ||
         p.description.en.toLowerCase().includes(q) ||
         p.description.ar.toLowerCase().includes(q)
     );
@@ -220,6 +345,74 @@ export default function AdminPage() {
 
   const handleLoadMore = () => {
     setVisibleCount((prev) => prev + 10);
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  };
+
+  const processCvFile = async (file: File | undefined | null) => {
+    if (!file) return;
+    setCvError(null);
+    setCvSuccess(null);
+    setCvUploading(true);
+    try {
+      await saveCvDocument(file);
+      setCvSuccess(
+        locale === 'en'
+          ? `"${file.name}" uploaded successfully.`
+          : `تم رفع الملف "${file.name}" بنجاح.`
+      );
+    } catch (err) {
+      const code = err instanceof Error ? err.message : '';
+      if (code === 'INVALID_TYPE') {
+        setCvError(
+          locale === 'en'
+            ? 'Unsupported file type. Please upload a .pdf, .doc, or .docx document.'
+            : 'نوع الملف غير مدعوم. يرجى رفع ملف بصيغة PDF أو DOC أو DOCX.'
+        );
+      } else if (code === 'FILE_TOO_LARGE') {
+        setCvError(
+          locale === 'en'
+            ? `File is too large. Maximum size is ${Math.round(MAX_CV_FILE_SIZE / 1024)} KB.`
+            : `حجم الملف كبير جداً. الحد الأقصى هو ${Math.round(MAX_CV_FILE_SIZE / 1024)} كيلوبايت.`
+        );
+      } else {
+        setCvError(
+          locale === 'en'
+            ? 'Could not upload the CV file. Please try again.'
+            : 'تعذر رفع السيرة الذاتية. يرجى المحاولة مرة أخرى.'
+        );
+      }
+    } finally {
+      setCvUploading(false);
+      if (cvFileInputRef.current) {
+        cvFileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleCvInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    void processCvFile(file);
+  };
+
+  const handleCvDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCvDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    void processCvFile(file);
+  };
+
+  const handleRemoveCv = async () => {
+    setCvError(null);
+    setCvSuccess(null);
+    await deleteCvDocument();
+    setCvSuccess(
+      locale === 'en' ? 'CV document removed.' : 'تم حذف السيرة الذاتية.'
+    );
   };
 
   // Render Login Form if unauthenticated
@@ -264,7 +457,7 @@ export default function AdminPage() {
         <main className="relative z-10 flex-1 flex items-center justify-center px-6 py-12">
           <div className="w-full max-w-md bg-[#0E1520]/85 backdrop-blur-xl border border-[#4CE0D2]/20 rounded-2xl p-8 sm:p-10 shadow-[0_20px_50px_rgba(0,0,0,0.8)] animate-in fade-in zoom-in-95 duration-200">
             {/* Header Lock Icon & Titles */}
-            <div className="flex flex-col items-center text-center space-y-3 mb-8">
+            <div className="flex flex-col items-center text-center space-y-3 mb-6">
               <div className="w-12 h-12 rounded-xl flex items-center justify-center bg-slate-900/80 border border-[#4CE0D2]/30 shadow-[0_0_20px_rgba(76,224,210,0.2)]">
                 <Image
                   src="/images/logo.png"
@@ -282,20 +475,21 @@ export default function AdminPage() {
                 </h1>
                 <p className="text-xs text-slate-400 mt-1">
                   {locale === 'en'
-                    ? 'Sign in to manage projects and coursework'
-                    : 'تسجيل الدخول لإدارة المشاريع والأعمال'}
+                    ? 'Firebase Firestore & Portfolio Management'
+                    : 'إدارة مشاريع ملف الأعمال وقاعدة البيانات'}
                 </p>
               </div>
             </div>
 
-            {/* Form */}
-            <form onSubmit={handleSignIn} className="space-y-4">
-              {authError && (
-                <div className="p-3 text-xs text-red-300 bg-red-950/40 border border-red-500/30 rounded-lg">
-                  {authError}
-                </div>
-              )}
+            {/* Error Message */}
+            {authError && (
+              <div className="mb-4 p-3 text-xs text-red-300 bg-red-950/40 border border-red-500/30 rounded-lg">
+                {authError}
+              </div>
+            )}
 
+            {/* Email & Password Form */}
+            <form onSubmit={handleSignIn} className="space-y-4">
               {/* Email */}
               <div className="space-y-1.5">
                 <label className="block text-xs font-medium text-slate-300">
@@ -376,7 +570,7 @@ export default function AdminPage() {
 
         {/* Quiet Footer */}
         <footer className="relative z-10 w-full py-4 text-center text-[11px] text-slate-600">
-          Fahed Al-Mansoor Portfolio System · Kuwait
+          Fahed Al-Mansoor Portfolio System
         </footer>
       </div>
     );
@@ -412,10 +606,7 @@ export default function AdminPage() {
               </div>
               <div>
                 <span className="text-sm font-semibold text-white tracking-tight group-hover:text-[#4CE0D2] transition-colors">
-                  {locale === 'en' ? 'Project Management' : 'إدارة المشاريع'}
-                </span>
-                <span className="hidden sm:inline-block ms-2 text-[11px] text-[#4CE0D2] font-mono">
-                  #dashboard
+                  {locale === 'en' ? 'Dashboard' : 'لوحة التحكم'}
                 </span>
               </div>
             </Link>
@@ -432,6 +623,11 @@ export default function AdminPage() {
               <ExternalLink className="w-3.5 h-3.5 text-[#4CE0D2]" />
             </Link>
 
+            {/* Admin session indicator */}
+            <span className="hidden lg:inline-block text-xs text-slate-400 font-mono truncate max-w-[150px]">
+              {DEFAULT_ADMIN_EMAIL}
+            </span>
+
             {/* Locale Toggle */}
             <button
               type="button"
@@ -440,16 +636,6 @@ export default function AdminPage() {
             >
               <Globe className="w-3.5 h-3.5 text-[#4CE0D2]" />
               <span className="hidden sm:inline">{locale === 'en' ? 'العربية' : 'English'}</span>
-            </button>
-
-            {/* Reset to Seeded Defaults */}
-            <button
-              type="button"
-              onClick={handleResetDefaults}
-              title={locale === 'en' ? 'Reset to Demo Projects' : 'استعادة المشاريع الأصلية'}
-              className="p-1.5 text-slate-400 hover:text-white bg-slate-900/60 border border-[#4CE0D2]/20 rounded-md hover:border-[#4CE0D2] transition-colors cursor-pointer"
-            >
-              <RotateCcw className="w-4 h-4" />
             </button>
 
             {/* Sign Out */}
@@ -473,11 +659,6 @@ export default function AdminPage() {
             <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
               {locale === 'en' ? 'Portfolio Projects' : 'مشاريع ملف الأعمال'}
             </h1>
-            <p className="text-xs sm:text-sm text-slate-400 mt-1">
-              {locale === 'en'
-                ? `Total ${projects.length} coursework, embedded systems, and network setups.`
-                : `إجمالي ${projects.length} من مشاريع الأنظمة المدمجة والشبكات والعتاد.`}
-            </p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -492,6 +673,150 @@ export default function AdminPage() {
           </div>
         </div>
 
+        {/* CV Document Upload Section */}
+        <section className="bg-[#0E1520]/70 backdrop-blur-lg border border-[#4CE0D2]/20 rounded-2xl p-5 sm:p-6 shadow-[0_8px_32px_rgba(0,0,0,0.4)] space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-slate-900/80 border border-[#4CE0D2]/25 text-[#4CE0D2] shrink-0">
+                <FileText className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base sm:text-lg font-semibold text-white">
+                  {locale === 'en' ? 'CV Document' : 'ملف السيرة الذاتية (CV)'}
+                </h2>
+                <p className="text-xs text-slate-400">
+                  {locale === 'en'
+                    ? 'Upload a PDF or Word document (.pdf, .doc, .docx · max 700 KB) to display on your portfolio.'
+                    : 'ارفع ملف PDF أو Word (بحد أقصى 700 كيلوبايت) لعرضه للتحميل في الموقع.'}
+                </p>
+              </div>
+            </div>
+
+            <input
+              ref={cvFileInputRef}
+              type="file"
+              accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              onChange={handleCvInputChange}
+              className="hidden"
+            />
+          </div>
+
+          {cvError && (
+            <div className="p-3 text-xs text-red-300 bg-red-950/40 border border-red-500/30 rounded-lg">
+              {cvError}
+            </div>
+          )}
+
+          {cvSuccess && (
+            <div className="flex items-center gap-2 p-3 text-xs text-[#4CE0D2] bg-[#4CE0D2]/10 border border-[#4CE0D2]/30 rounded-lg">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{cvSuccess}</span>
+            </div>
+          )}
+
+          {cvDoc ? (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-slate-900/60 border border-[#4CE0D2]/20">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-lg bg-[#4CE0D2]/10 border border-[#4CE0D2]/30 flex items-center justify-center text-[#4CE0D2] shrink-0">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-white truncate">{cvDoc.fileName}</p>
+                  <p suppressHydrationWarning className="text-xs text-slate-400 font-mono">
+                    {formatFileSize(cvDoc.fileSize)} ·{' '}
+                    {new Date(cvDoc.updatedAt).toLocaleDateString(
+                      locale === 'ar' ? 'ar-KW' : 'en-US',
+                      { year: 'numeric', month: 'short', day: 'numeric' }
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {cvDoc.mimeType === 'application/pdf' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsPreviewingCv(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-200 bg-slate-800/80 hover:bg-slate-800 border border-[#4CE0D2]/20 hover:border-[#4CE0D2] transition-all cursor-pointer"
+                  >
+                    <Eye className="w-3.5 h-3.5 text-[#4CE0D2]" />
+                    <span>{locale === 'en' ? 'Preview' : 'معاينة'}</span>
+                  </button>
+                )}
+
+                <a
+                  href={cvDoc.dataUrl}
+                  download={cvDoc.fileName}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-200 bg-slate-800/80 hover:bg-slate-800 border border-[#4CE0D2]/20 hover:border-[#4CE0D2] transition-all"
+                >
+                  <Download className="w-3.5 h-3.5 text-[#4CE0D2]" />
+                  <span>{locale === 'en' ? 'Download' : 'تحميل'}</span>
+                </a>
+
+                <button
+                  type="button"
+                  disabled={cvUploading}
+                  onClick={() => cvFileInputRef.current?.click()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#0A0E14] bg-[#4CE0D2] hover:bg-[#3ec4b7] transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{locale === 'en' ? 'Replace' : 'استبدال'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleRemoveCv}
+                  title={locale === 'en' ? 'Remove CV' : 'حذف السيرة الذاتية'}
+                  className="p-1.5 rounded-lg text-red-400 hover:text-red-200 bg-red-950/20 hover:bg-red-950/40 border border-transparent hover:border-red-500/30 transition-all cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setCvDragActive(true);
+              }}
+              onDragLeave={() => setCvDragActive(false)}
+              onDrop={handleCvDrop}
+              onClick={() => cvFileInputRef.current?.click()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  cvFileInputRef.current?.click();
+                }
+              }}
+              className={`flex flex-col items-center justify-center gap-2 p-6 rounded-xl border border-dashed transition-all cursor-pointer ${
+                cvDragActive
+                  ? 'border-[#4CE0D2] bg-[#4CE0D2]/10'
+                  : 'border-[#4CE0D2]/25 bg-slate-900/40 hover:border-[#4CE0D2]/60 hover:bg-slate-900/60'
+              }`}
+            >
+              <div className="w-10 h-10 rounded-full flex items-center justify-center bg-slate-900 border border-[#4CE0D2]/25 text-[#4CE0D2]">
+                <Upload className="w-4 h-4" />
+              </div>
+              <p className="text-xs sm:text-sm font-medium text-white text-center">
+                {cvUploading
+                  ? locale === 'en'
+                    ? 'Uploading document...'
+                    : 'جاري رفع الملف...'
+                  : locale === 'en'
+                    ? 'Click to upload or drag & drop your CV here'
+                    : 'اضغط للرفع أو اسحب ملف السيرة الذاتية هنا'}
+              </p>
+              <p className="text-[11px] text-slate-400">
+                {locale === 'en'
+                  ? 'Supported formats: PDF, DOC, DOCX (up to 700 KB)'
+                  : 'الصيغ المدعومة: PDF، DOC، DOCX (بحد أقصى 700 كيلوبايت)'}
+              </p>
+            </div>
+          )}
+        </section>
+
         {/* Filter and Search Bar */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 bg-slate-900/40 backdrop-blur-lg border border-[#4CE0D2]/15 p-3 rounded-xl">
           <div className="relative flex-1">
@@ -501,12 +826,12 @@ export default function AdminPage() {
               value={searchQuery}
               onChange={(e) => {
                 setSearchQuery(e.target.value);
-                setVisibleCount(10); // reset page view when searching
+                setVisibleCount(10);
               }}
               placeholder={
                 locale === 'en'
-                  ? 'Search by title, tag (#embedded, #networking), or keyword...'
-                  : 'البحث بالعنوان، الوسم، أو الكلمة المفتاحية...'
+                  ? 'Search by title or keyword...'
+                  : 'البحث بالعنوان أو الكلمة المفتاحية...'
               }
               className="w-full ps-9 pe-4 py-2 text-xs sm:text-sm bg-slate-900/60 border border-[#4CE0D2]/15 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-[#4CE0D2]"
             />
@@ -530,9 +855,6 @@ export default function AdminPage() {
                   <th className="py-3.5 px-4 sm:px-6 text-start">
                     {locale === 'en' ? 'Project' : 'المشروع'}
                   </th>
-                  <th className="py-3.5 px-4 text-start">
-                    {locale === 'en' ? 'Tag' : 'المجال'}
-                  </th>
                   <th className="py-3.5 px-4 text-start hidden md:table-cell">
                     {locale === 'en' ? 'Description' : 'الوصف'}
                   </th>
@@ -548,12 +870,12 @@ export default function AdminPage() {
               <tbody className="divide-y divide-[#4CE0D2]/10">
                 {displayedProjects.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="py-12 text-center text-slate-400">
+                    <td colSpan={4} className="py-12 text-center text-slate-400">
                       {locale === 'en' ? 'No projects match your criteria.' : 'لا توجد مشاريع تطابق البحث.'}
                     </td>
                   </tr>
                 ) : (
-                  displayedProjects.map((project, idx) => (
+                  displayedProjects.map((project) => (
                     <tr
                       key={project.id}
                       className="hover:bg-slate-800/30 transition-colors group"
@@ -575,18 +897,8 @@ export default function AdminPage() {
                             <p className="font-medium text-white truncate group-hover:text-[#4CE0D2] transition-colors">
                               {project.title[locale]}
                             </p>
-                            <p className="text-[11px] text-slate-500 font-mono truncate">
-                              #{idx + 1} · {project.id}
-                            </p>
                           </div>
                         </div>
-                      </td>
-
-                      {/* Domain Tag */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <span className="font-mono text-xs text-[#4CE0D2] bg-slate-900/80 px-2 py-0.5 rounded border border-[#4CE0D2]/25">
-                          {project.tag}
-                        </span>
                       </td>
 
                       {/* Description Preview */}
@@ -597,7 +909,10 @@ export default function AdminPage() {
                       </td>
 
                       {/* Date */}
-                      <td className="py-3.5 px-4 whitespace-nowrap text-slate-400 text-xs font-mono tabular-nums hidden lg:table-cell">
+                      <td
+                        suppressHydrationWarning
+                        className="py-3.5 px-4 whitespace-nowrap text-slate-400 text-xs font-mono tabular-nums hidden lg:table-cell"
+                      >
                         {project.createdAt
                           ? new Date(project.createdAt).toLocaleDateString(locale === 'ar' ? 'ar-KW' : 'en-US', {
                               year: 'numeric',
@@ -698,8 +1013,8 @@ export default function AdminPage() {
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {locale === 'en'
-                    ? 'Enter coursework details, domain tag, and media path'
-                    : 'أدخل تفاصيل المشروع والوسم ورابط الصورة'}
+                    ? 'Enter project details and upload an image'
+                    : 'أدخل تفاصيل المشروع وارفع صورة المشروع'}
                 </p>
               </div>
 
@@ -750,78 +1065,103 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              {/* Tag & Presets */}
+              {/* Project Image Upload */}
               <div className="space-y-2">
                 <label className="block text-xs font-medium text-slate-300">
-                  {locale === 'en' ? 'Domain Tag (Monospace in Modal)' : 'وسم المجال'}
+                  {locale === 'en' ? 'Project Image *' : 'صورة المشروع *'}
                 </label>
-                <input
-                  type="text"
-                  required
-                  value={formTag}
-                  onChange={(e) => setFormTag(e.target.value)}
-                  placeholder="#embedded"
-                  className="w-full px-3 py-2 text-sm bg-slate-900/70 border border-[#4CE0D2]/20 rounded-lg text-white font-mono placeholder-slate-500 focus:outline-none focus:border-[#4CE0D2]"
-                />
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {TAG_PRESETS.map((preset) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => setFormTag(preset)}
-                      className={`text-[11px] font-mono px-2 py-0.5 rounded cursor-pointer transition-colors ${
-                        formTag === preset
-                          ? 'bg-[#4CE0D2] text-[#0A0E14] font-medium'
-                          : 'bg-slate-900 text-slate-400 hover:text-white border border-[#4CE0D2]/20'
-                      }`}
-                    >
-                      {preset}
-                    </button>
-                  ))}
-                </div>
-              </div>
 
-              {/* Image URL & Presets */}
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-slate-300">
-                  {locale === 'en' ? 'Project Image URL or Preset' : 'رابط أو نموذج صورة المشروع'}
-                </label>
                 <input
-                  type="text"
-                  required
-                  value={formImage}
-                  onChange={(e) => setFormImage(e.target.value)}
-                  placeholder="/images/smart-lock.jpg"
-                  className="w-full px-3 py-2 text-sm bg-slate-900/70 border border-[#4CE0D2]/20 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-[#4CE0D2]"
+                  ref={projectImageInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
+                  onChange={handleProjectImageChange}
+                  className="hidden"
                 />
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-                  {IMAGE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.url}
-                      type="button"
-                      onClick={() => setFormImage(preset.url)}
-                      className={`relative aspect-[16/10] rounded-lg overflow-hidden border cursor-pointer transition-all ${
-                        formImage === preset.url
-                          ? 'border-[#4CE0D2] ring-2 ring-[#4CE0D2]/30 scale-[1.02]'
-                          : 'border-slate-800 opacity-60 hover:opacity-100'
-                      }`}
-                    >
+                {formImage ? (
+                  <div className="rounded-xl overflow-hidden border border-[#4CE0D2]/25 bg-slate-900/60">
+                    <div className="relative w-full aspect-[16/9] bg-slate-950">
                       <Image
-                        src={preset.url}
-                        alt=""
+                        src={formImage}
+                        alt={formTitleEn || 'Project preview'}
                         fill
+                        sizes="(max-width: 640px) 100vw, 600px"
                         className="object-cover"
                         referrerPolicy="no-referrer"
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent flex items-end p-1.5">
-                        <span className="text-[10px] text-white truncate w-full text-start">
-                          {preset.label}
-                        </span>
+                    </div>
+                    <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-3 border-t border-[#4CE0D2]/15">
+                      <span className="text-xs text-slate-300 truncate max-w-[260px]">
+                        {projectImageName ||
+                          (locale === 'en' ? 'Selected project image' : 'صورة المشروع الحالية')}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={projectImageUploading}
+                          onClick={() => projectImageInputRef.current?.click()}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#0A0E14] bg-[#4CE0D2] hover:bg-[#3ec4b7] transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>{locale === 'en' ? 'Change Image' : 'تغيير الصورة'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFormImage('');
+                            setProjectImageName('');
+                          }}
+                          title={locale === 'en' ? 'Remove image' : 'إزالة الصورة'}
+                          className="p-1.5 rounded-lg text-red-400 hover:text-red-200 bg-red-950/20 hover:bg-red-950/40 border border-transparent hover:border-red-500/30 transition-all cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
-                    </button>
-                  ))}
-                </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setProjectImageDragActive(true);
+                    }}
+                    onDragLeave={() => setProjectImageDragActive(false)}
+                    onDrop={handleProjectImageDrop}
+                    onClick={() => projectImageInputRef.current?.click()}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        projectImageInputRef.current?.click();
+                      }
+                    }}
+                    className={`flex flex-col items-center justify-center gap-2 p-6 rounded-xl border border-dashed transition-all cursor-pointer ${
+                      projectImageDragActive
+                        ? 'border-[#4CE0D2] bg-[#4CE0D2]/10'
+                        : 'border-[#4CE0D2]/25 bg-slate-900/50 hover:border-[#4CE0D2]/60 hover:bg-slate-900/70'
+                    }`}
+                  >
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center bg-slate-900 border border-[#4CE0D2]/25 text-[#4CE0D2]">
+                      <ImageIcon className="w-4 h-4" />
+                    </div>
+                    <p className="text-xs sm:text-sm font-medium text-white text-center">
+                      {projectImageUploading
+                        ? locale === 'en'
+                          ? 'Processing image...'
+                          : 'جاري معالجة الصورة...'
+                        : locale === 'en'
+                          ? 'Click to upload or drag & drop project image'
+                          : 'اضغط لرفع صورة المشروع أو اسحبها هنا'}
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      {locale === 'en'
+                        ? 'Supported formats: PNG, JPG, WEBP, GIF (max 5 MB)'
+                        : 'الصيغ المدعومة: PNG، JPG، WEBP، GIF (بحد أقصى 5 ميجابايت)'}
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Description EN & AR */}
@@ -905,7 +1245,6 @@ export default function AdminPage() {
               </button>
             </div>
             <div className="p-6 space-y-3">
-              <span className="font-mono text-xs text-[#4CE0D2]">{previewProject.tag}</span>
               <h3 className="text-xl font-semibold text-white">{previewProject.title[locale]}</h3>
               <p className="text-sm text-slate-300 leading-relaxed">
                 {previewProject.description[locale]}
@@ -951,6 +1290,40 @@ export default function AdminPage() {
                 {locale === 'en' ? 'Delete' : 'تأكيد الحذف'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* CV PDF PREVIEW MODAL */}
+      {isPreviewingCv && cvDoc && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="fixed inset-0 bg-[#0A0E14]/85 backdrop-blur-md"
+            onClick={() => setIsPreviewingCv(false)}
+          />
+          <div className="relative w-full max-w-4xl h-[85vh] bg-[#0E1520] border border-[#4CE0D2]/30 rounded-2xl overflow-hidden shadow-2xl z-10 flex flex-col">
+            <div className="px-5 py-3.5 border-b border-[#4CE0D2]/15 flex items-center justify-between">
+              <div className="flex items-center gap-2 min-w-0">
+                <FileText className="w-4 h-4 text-[#4CE0D2] shrink-0" />
+                <span className="text-sm font-medium text-white truncate">{cvDoc.fileName}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPreviewingCv(false)}
+                className="p-1.5 rounded-full text-slate-400 hover:text-white bg-slate-900/60 border border-[#4CE0D2]/20 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <iframe
+              src={cvDoc.dataUrl}
+              title={cvDoc.fileName}
+              className="w-full flex-1 bg-slate-950"
+            />
           </div>
         </div>
       )}

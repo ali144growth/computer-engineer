@@ -3,6 +3,8 @@
 import React from 'react';
 import Image from 'next/image';
 import { Locale, portfolioData } from '@/lib/portfolio-data';
+import { useCv } from '@/lib/cv-store';
+import { Download } from 'lucide-react';
 
 interface HeroProps {
   locale: Locale;
@@ -11,6 +13,7 @@ interface HeroProps {
 export function Hero({ locale }: HeroProps) {
   const content = portfolioData.hero;
   const isAr = locale === 'ar';
+  const cvDoc = useCv();
 
   const handleScrollToWork = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
@@ -94,8 +97,8 @@ export function Hero({ locale }: HeroProps) {
             {content.headline[locale]}
           </h1>
 
-          {/* Single CTA button */}
-          <div className="pt-2">
+          {/* CTA buttons */}
+          <div className="pt-2 flex flex-wrap items-center gap-4">
             <a
               href="#work"
               onClick={handleScrollToWork}
@@ -103,6 +106,17 @@ export function Hero({ locale }: HeroProps) {
             >
               {content.cta[locale]}
             </a>
+
+            {cvDoc && (
+              <a
+                href={cvDoc.dataUrl}
+                download={cvDoc.fileName}
+                className="inline-flex items-center justify-center gap-2 px-6 py-3.5 text-sm md:text-base font-medium rounded-lg text-white bg-slate-900/70 backdrop-blur-md border border-[#4CE0D2]/30 hover:border-[#4CE0D2] hover:bg-slate-800/80 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#4CE0D2] focus-visible:ring-offset-[#0A0E14] whitespace-nowrap active:scale-[0.98]"
+              >
+                <Download className="w-4 h-4 text-[#4CE0D2]" />
+                <span>{locale === 'en' ? 'Download CV' : 'تحميل السيرة الذاتية'}</span>
+              </a>
+            )}
           </div>
         </div>
       </div>

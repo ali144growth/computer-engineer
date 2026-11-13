@@ -1,0 +1,73 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'ali144.growth@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['titleEn', 'image']) &&
+        data.keys().hasOnly(['id', 'titleEn', 'titleAr', 'image', 'tag', 'descriptionEn', 'descriptionAr', 'createdAt']) &&
+        data.titleEn is string && data.titleEn.size() > 0 && data.titleEn.size() <= 200 &&
+        data.image is string && data.image.size() > 0 && data.image.size() <= 1040000 &&
+        (!('id' in data) || (data.id is string && data.id.size() <= 128)) &&
+        (!('tag' in data) || (data.tag is string && data.tag.size() <= 64)) &&
+        (!('titleAr' in data) || (data.titleAr is string && data.titleAr.size() <= 200)) &&
+        (!('descriptionEn' in data) || (data.descriptionEn is string && data.descriptionEn.size() <= 1000)) &&
+        (!('descriptionAr' in data) || (data.descriptionAr is string && data.descriptionAr.size() <= 1000)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
+    }
+
+    function isValidCvDocument(data) {
+      return data.keys().hasAll(['fileName', 'mimeType', 'fileSize', 'dataUrl', 'updatedAt']) &&
+        data.keys().hasOnly(['fileName', 'mimeType', 'fileSize', 'dataUrl', 'updatedAt']) &&
+        data.fileName is string && data.fileName.size() > 0 && data.fileName.size() <= 255 &&
+        data.mimeType is string && data.mimeType.size() > 0 && data.mimeType.size() <= 128 &&
+        data.fileSize is int && data.fileSize > 0 && data.fileSize <= 750000 &&
+        data.dataUrl is string && data.dataUrl.size() > 0 && data.dataUrl.size() <= 1040000 &&
+        data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64;
+    }
+
+    // Projects Collection
+    match /projects/{projectId} {
+      // Publicly readable for portfolio showcase
+      allow get, list: if true;
+
+      // Only authenticated admin can create, update, or delete
+      allow create: if isSignedIn() && isValidId(projectId) && isValidProject(request.resource.data);
+      allow update: if isSignedIn() && isValidId(projectId) && isValidProject(request.resource.data);
+      allow delete: if isSignedIn() && isValidId(projectId);
+    }
+
+    // Site Settings / CV Document
+    match /settings/{docId} {
+      allow get: if docId == 'cv';
+      allow list: if false;
+      allow create, update: if isSignedIn() && isValidId(docId) && docId == 'cv' && isValidCvDocument(request.resource.data);
+      allow delete: if isSignedIn() && isValidId(docId) && docId == 'cv';
+    }
+
+    // Admin authorization metadata
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}

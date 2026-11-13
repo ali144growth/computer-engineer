@@ -4,7 +4,7 @@ export interface Project {
   id: string;
   title: Record<Locale, string>;
   image: string;
-  tag: string; // The single minimal tag used strictly in the modal
+  tag?: string;
   description: Record<Locale, string>;
 }
 

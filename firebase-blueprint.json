@@ -1,0 +1,94 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "Portfolio project item representing engineering coursework, embedded systems, and networking prototypes.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Unique identifier for the project"
+        },
+        "titleEn": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Project title in English"
+        },
+        "titleAr": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Project title in Arabic"
+        },
+        "image": {
+          "type": "string",
+          "maxLength": 1040000,
+          "description": "URL, path, or uploaded Data URL of the project image"
+        },
+        "tag": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Optional legacy tag field"
+        },
+        "descriptionEn": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Detailed project description in English"
+        },
+        "descriptionAr": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Detailed project description in Arabic"
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp when the project was created"
+        }
+      },
+      "required": ["titleEn", "image"]
+    },
+    "CvDocument": {
+      "title": "CvDocument",
+      "description": "Uploaded CV / Resume document metadata and encoded payload for the portfolio.",
+      "type": "object",
+      "properties": {
+        "fileName": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "Original uploaded file name"
+        },
+        "mimeType": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "MIME type of the CV document"
+        },
+        "fileSize": {
+          "type": "number",
+          "description": "File size in bytes"
+        },
+        "dataUrl": {
+          "type": "string",
+          "maxLength": 1040000,
+          "description": "Base64 Data URL of the uploaded CV document"
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp when the CV was uploaded or updated"
+        }
+      },
+      "required": ["fileName", "mimeType", "fileSize", "dataUrl", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Public collection of portfolio projects managed by the admin"
+    },
+    "/settings/{docId}": {
+      "schema": "CvDocument",
+      "description": "Public site configuration documents such as the active CV document"
+    }
+  }
+}

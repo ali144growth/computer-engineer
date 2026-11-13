@@ -84,13 +84,6 @@ export function ProjectModal({ project, locale, onClose }: ProjectModalProps) {
 
           {/* Project Details */}
           <div className="p-6 sm:p-8 space-y-4">
-            {/* Project Tag - strictly monospace as designated for this single detail */}
-            <div>
-              <span className="font-mono text-xs tracking-wider text-[#4CE0D2] uppercase select-all">
-                {project.tag}
-              </span>
-            </div>
-
             {/* Project Title */}
             <h2
               id="modal-project-title"
