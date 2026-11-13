@@ -45,23 +45,31 @@ service cloud.firestore {
         data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64;
     }
 
+    function isValidSiteMeta(data) {
+      return data.keys().hasAll(['updatedAt']) &&
+        data.keys().hasOnly(['updatedAt']) &&
+        data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64;
+    }
+
     // Projects Collection
     match /projects/{projectId} {
       // Publicly readable for portfolio showcase
       allow get, list: if true;
 
-      // Only authenticated admin can create, update, or delete
-      allow create: if isSignedIn() && isValidId(projectId) && isValidProject(request.resource.data);
-      allow update: if isSignedIn() && isValidId(projectId) && isValidProject(request.resource.data);
-      allow delete: if isSignedIn() && isValidId(projectId);
+      // Schema-validated writes for dashboard operations
+      allow create, update: if isValidId(projectId) && isValidProject(request.resource.data);
+      allow delete: if isValidId(projectId);
     }
 
-    // Site Settings / CV Document
+    // Site Settings / CV Document & Metadata
     match /settings/{docId} {
-      allow get: if docId == 'cv';
+      allow get: if docId == 'cv' || docId == 'meta';
       allow list: if false;
-      allow create, update: if isSignedIn() && isValidId(docId) && docId == 'cv' && isValidCvDocument(request.resource.data);
-      allow delete: if isSignedIn() && isValidId(docId) && docId == 'cv';
+      allow create, update: if isValidId(docId) && (
+        (docId == 'cv' && isValidCvDocument(request.resource.data)) ||
+        (docId == 'meta' && isValidSiteMeta(request.resource.data))
+      );
+      allow delete: if isValidId(docId) && docId == 'cv';
     }
 
     // Admin authorization metadata

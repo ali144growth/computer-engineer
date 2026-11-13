@@ -8,6 +8,7 @@ import { WorkSection } from '@/components/WorkSection';
 import { ContactSection } from '@/components/ContactSection';
 import { ProjectModal } from '@/components/ProjectModal';
 import { FloatingWhatsApp } from '@/components/FloatingWhatsApp';
+import { LastUpdatedWidget } from '@/components/LastUpdatedWidget';
 import { CircuitBackground } from '@/components/CircuitBackground';
 import { Footer } from '@/components/Footer';
 
@@ -68,6 +69,9 @@ export default function PortfolioPage() {
         locale={locale}
         onClose={() => setSelectedProject(null)}
       />
+
+      {/* Bottom-Left Last Updated Floating Widget */}
+      <LastUpdatedWidget locale={locale} isSidebarOpen={isSidebarOpen} />
 
       {/* Corner-Mirrored Floating WhatsApp Button */}
       <FloatingWhatsApp locale={locale} isSidebarOpen={isSidebarOpen} />

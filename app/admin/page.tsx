@@ -37,6 +37,7 @@ import {
   Download,
   CheckCircle2,
   Image as ImageIcon,
+  Loader2,
 } from 'lucide-react';
 
 const AUTH_STORAGE_KEY = 'ce_admin_logged_in';
@@ -155,6 +156,7 @@ export default function AdminPage() {
   const [projectImageName, setProjectImageName] = useState('');
   const [projectImageUploading, setProjectImageUploading] = useState(false);
   const [projectImageDragActive, setProjectImageDragActive] = useState(false);
+  const [isSavingProject, setIsSavingProject] = useState(false);
 
   // CV Document Upload State
   const cvDoc = useCv();
@@ -308,19 +310,37 @@ export default function AdminPage() {
       },
     };
 
-    if (editingProject) {
-      await updateStoredProject(editingProject.id, payload);
-    } else {
-      await addStoredProject(payload);
-    }
+    setIsSavingProject(true);
+    try {
+      const saveOperation = editingProject
+        ? updateStoredProject(editingProject.id, payload)
+        : addStoredProject(payload);
 
-    setIsModalOpen(false);
+      await Promise.all([
+        saveOperation,
+        new Promise((resolve) => setTimeout(resolve, 250)),
+      ]);
+      setIsModalOpen(false);
+    } catch {
+      setFormError(
+        locale === 'en'
+          ? 'Failed to save changes. Please try again.'
+          : 'فشل حفظ التعديلات. يرجى المحاولة مرة أخرى.'
+      );
+    } finally {
+      setIsSavingProject(false);
+    }
   };
 
   const handleDeleteConfirm = async () => {
     if (deletingProject) {
-      await deleteStoredProject(deletingProject.id);
-      setDeletingProject(null);
+      try {
+        await deleteStoredProject(deletingProject.id);
+      } catch (err) {
+        console.warn('Delete project failed:', err);
+      } finally {
+        setDeletingProject(null);
+      }
     }
   };
 
@@ -409,10 +429,18 @@ export default function AdminPage() {
   const handleRemoveCv = async () => {
     setCvError(null);
     setCvSuccess(null);
-    await deleteCvDocument();
-    setCvSuccess(
-      locale === 'en' ? 'CV document removed.' : 'تم حذف السيرة الذاتية.'
-    );
+    try {
+      await deleteCvDocument();
+      setCvSuccess(
+        locale === 'en' ? 'CV document removed.' : 'تم حذف السيرة الذاتية.'
+      );
+    } catch {
+      setCvError(
+        locale === 'en'
+          ? 'Could not remove the CV file. Please try again.'
+          : 'تعذر حذف السيرة الذاتية. يرجى المحاولة مرة أخرى.'
+      );
+    }
   };
 
   // Render Login Form if unauthenticated
@@ -759,7 +787,11 @@ export default function AdminPage() {
                   onClick={() => cvFileInputRef.current?.click()}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#0A0E14] bg-[#4CE0D2] hover:bg-[#3ec4b7] transition-all cursor-pointer disabled:opacity-50"
                 >
-                  <Upload className="w-3.5 h-3.5" />
+                  {cvUploading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5" />
+                  )}
                   <span>{locale === 'en' ? 'Replace' : 'استبدال'}</span>
                 </button>
 
@@ -797,7 +829,11 @@ export default function AdminPage() {
               }`}
             >
               <div className="w-10 h-10 rounded-full flex items-center justify-center bg-slate-900 border border-[#4CE0D2]/25 text-[#4CE0D2]">
-                <Upload className="w-4 h-4" />
+                {cvUploading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Upload className="w-4 h-4" />
+                )}
               </div>
               <p className="text-xs sm:text-sm font-medium text-white text-center">
                 {cvUploading
@@ -1044,6 +1080,7 @@ export default function AdminPage() {
                   <input
                     type="text"
                     required
+                    maxLength={200}
                     value={formTitleEn}
                     onChange={(e) => setFormTitleEn(e.target.value)}
                     placeholder="e.g. Smart RFID Gate Controller"
@@ -1057,6 +1094,7 @@ export default function AdminPage() {
                   </label>
                   <input
                     type="text"
+                    maxLength={200}
                     value={formTitleAr}
                     onChange={(e) => setFormTitleAr(e.target.value)}
                     placeholder="مثال: وحدة تحكم ذكية بالبوابة عبر RFID"
@@ -1144,7 +1182,11 @@ export default function AdminPage() {
                     }`}
                   >
                     <div className="w-10 h-10 rounded-full flex items-center justify-center bg-slate-900 border border-[#4CE0D2]/25 text-[#4CE0D2]">
-                      <ImageIcon className="w-4 h-4" />
+                      {projectImageUploading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <ImageIcon className="w-4 h-4" />
+                      )}
                     </div>
                     <p className="text-xs sm:text-sm font-medium text-white text-center">
                       {projectImageUploading
@@ -1172,6 +1214,7 @@ export default function AdminPage() {
                   </label>
                   <textarea
                     rows={3}
+                    maxLength={1000}
                     value={formDescEn}
                     onChange={(e) => setFormDescEn(e.target.value)}
                     placeholder="Brief 1-2 sentences explaining what you built..."
@@ -1185,6 +1228,7 @@ export default function AdminPage() {
                   </label>
                   <textarea
                     rows={3}
+                    maxLength={1000}
                     value={formDescAr}
                     onChange={(e) => setFormDescAr(e.target.value)}
                     placeholder="جملة أو جملتان توضحان ما تم بناؤه..."
@@ -1197,18 +1241,25 @@ export default function AdminPage() {
               <div className="pt-4 border-t border-[#4CE0D2]/15 flex items-center justify-end gap-3">
                 <button
                   type="button"
+                  disabled={isSavingProject}
                   onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 text-xs sm:text-sm font-medium text-slate-300 hover:text-white bg-slate-900/60 border border-slate-700 rounded-lg transition-colors cursor-pointer"
+                  className="px-4 py-2 text-xs sm:text-sm font-medium text-slate-300 hover:text-white bg-slate-900/60 border border-slate-700 rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {locale === 'en' ? 'Cancel' : 'إلغاء'}
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-xs sm:text-sm font-medium text-[#0A0E14] bg-[#4CE0D2] hover:bg-[#3ec4b7] rounded-lg transition-all shadow-[0_0_15px_rgba(76,224,210,0.2)] cursor-pointer"
+                  disabled={isSavingProject || projectImageUploading}
+                  className="inline-flex items-center justify-center gap-2 px-5 py-2 text-xs sm:text-sm font-medium text-[#0A0E14] bg-[#4CE0D2] hover:bg-[#3ec4b7] rounded-lg transition-all shadow-[0_0_15px_rgba(76,224,210,0.2)] cursor-pointer disabled:opacity-70 disabled:cursor-not-allowed"
                 >
-                  {editingProject
-                    ? locale === 'en' ? 'Save Changes' : 'حفظ التعديلات'
-                    : locale === 'en' ? 'Create Project' : 'إنشاء المشروع'}
+                  {isSavingProject && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>
+                    {isSavingProject
+                      ? locale === 'en' ? 'Saving...' : 'جاري الحفظ...'
+                      : editingProject
+                        ? locale === 'en' ? 'Save Changes' : 'حفظ التعديلات'
+                        : locale === 'en' ? 'Create Project' : 'إنشاء المشروع'}
+                  </span>
                 </button>
               </div>
             </form>

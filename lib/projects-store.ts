@@ -9,6 +9,7 @@ import {
   getDocs,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType, testConnection } from './firebase';
+import { touchSiteUpdatedAt } from './site-meta-store';
 
 export interface StoredProject extends Project {
   createdAt?: string; // ISO date string for sorting newest first
@@ -236,13 +237,13 @@ function docToProject(data: Record<string, unknown>, id: string): StoredProject 
 
 function projectToDoc(project: StoredProject): Record<string, unknown> {
   return {
-    id: project.id,
-    titleEn: project.title.en,
-    titleAr: project.title.ar,
-    image: project.image,
-    descriptionEn: project.description.en,
-    descriptionAr: project.description.ar,
-    createdAt: project.createdAt || new Date().toISOString(),
+    id: project.id.slice(0, 128),
+    titleEn: project.title.en.slice(0, 200),
+    titleAr: project.title.ar.slice(0, 200),
+    image: project.image.slice(0, 1040000),
+    descriptionEn: project.description.en.slice(0, 1000),
+    descriptionAr: project.description.ar.slice(0, 1000),
+    createdAt: (project.createdAt || new Date().toISOString()).slice(0, 64),
   };
 }
 
@@ -338,8 +339,9 @@ export async function addStoredProject(
   try {
     const docRef = doc(db, FIRESTORE_COLLECTION, created.id);
     await setDoc(docRef, projectToDoc(created));
+    await touchSiteUpdatedAt();
   } catch (err) {
-    console.error('Firestore add error, falling back locally:', err);
+    handleFirestoreError(err, OperationType.CREATE, `${FIRESTORE_COLLECTION}/${created.id}`);
   }
 
   return created;
@@ -366,8 +368,9 @@ export async function updateStoredProject(
   try {
     const docRef = doc(db, FIRESTORE_COLLECTION, id);
     await setDoc(docRef, projectToDoc(updatedProject), { merge: true });
+    await touchSiteUpdatedAt();
   } catch (err) {
-    console.error('Firestore update error, falling back locally:', err);
+    handleFirestoreError(err, OperationType.UPDATE, `${FIRESTORE_COLLECTION}/${id}`);
   }
 
   return updatedProject;
@@ -384,8 +387,9 @@ export async function deleteStoredProject(id: string): Promise<boolean> {
   try {
     const docRef = doc(db, FIRESTORE_COLLECTION, id);
     await deleteDoc(docRef);
+    await touchSiteUpdatedAt();
   } catch (err) {
-    console.error('Firestore delete error, falling back locally:', err);
+    handleFirestoreError(err, OperationType.DELETE, `${FIRESTORE_COLLECTION}/${id}`);
   }
 
   return true;

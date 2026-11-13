@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase';
+import { touchSiteUpdatedAt } from './site-meta-store';
 
 export interface CvDocument {
   fileName: string;
@@ -109,11 +110,12 @@ export async function saveCvDocument(file: File): Promise<CvDocument> {
   // Optimistic local save
   saveLocalCv(cvDoc);
 
-  // Persist to Firestore when authorized
+  // Persist to Firestore
   try {
     await setDoc(doc(db, CV_COLLECTION, CV_DOC_ID), cvDoc);
+    await touchSiteUpdatedAt();
   } catch (err) {
-    console.warn('Firestore CV save deferred locally:', err);
+    handleFirestoreError(err, OperationType.WRITE, `${CV_COLLECTION}/${CV_DOC_ID}`);
   }
 
   return cvDoc;
@@ -124,8 +126,9 @@ export async function deleteCvDocument(): Promise<void> {
 
   try {
     await deleteDoc(doc(db, CV_COLLECTION, CV_DOC_ID));
+    await touchSiteUpdatedAt();
   } catch (err) {
-    console.warn('Firestore CV delete deferred locally:', err);
+    handleFirestoreError(err, OperationType.DELETE, `${CV_COLLECTION}/${CV_DOC_ID}`);
   }
 }
 

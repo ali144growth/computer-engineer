@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Image from 'next/image';
 import { Locale, portfolioData } from '@/lib/portfolio-data';
-import { Globe, Menu, X } from 'lucide-react';
+import { useCv } from '@/lib/cv-store';
+import { Globe, Menu, X, Download } from 'lucide-react';
 
 interface NavbarProps {
   locale: Locale;
@@ -21,6 +22,7 @@ export function Navbar({
   const content = portfolioData.nav;
   const isRtl = locale === 'ar';
   const [internalOpen, setInternalOpen] = useState(false);
+  const cvDoc = useCv();
 
   const isSidebarOpen = controlledOpen !== undefined ? controlledOpen : internalOpen;
   const setIsSidebarOpen = setControlledOpen !== undefined ? setControlledOpen : setInternalOpen;
@@ -97,8 +99,24 @@ export function Navbar({
             </a>
           </nav>
 
-          {/* Zone 3: Actions (Locale Toggle + Mobile Hamburger) */}
+          {/* Zone 3: Actions (CV Download, Locale Toggle + Mobile Hamburger) */}
           <div className="flex items-center gap-2.5 shrink-0">
+            {/* Compact CV Download Button when available */}
+            {cvDoc && (
+              <a
+                href={cvDoc.dataUrl}
+                download={cvDoc.fileName}
+                aria-label={locale === 'en' ? 'Download CV' : 'تحميل السيرة الذاتية'}
+                title={locale === 'en' ? 'Download CV' : 'تحميل السيرة الذاتية'}
+                className="group flex items-center justify-center gap-1.5 w-9 h-9 sm:w-auto sm:h-auto sm:px-3 sm:py-1.5 text-xs font-medium text-[#0A0E14] bg-[#4CE0D2] hover:bg-[#3ec4b7] rounded-md transition-all whitespace-nowrap shrink-0 shadow-[0_0_12px_rgba(76,224,210,0.2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4CE0D2]"
+              >
+                <Download className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                <span className="hidden sm:inline">
+                  {locale === 'en' ? 'CV' : 'السيرة'}
+                </span>
+              </a>
+            )}
+
             {/* Locale Toggle: Icon only on mobile view */}
             <button
               type="button"
@@ -204,6 +222,18 @@ export function Navbar({
                   #contact
                 </span>
               </a>
+
+              {cvDoc && (
+                <a
+                  href={cvDoc.dataUrl}
+                  download={cvDoc.fileName}
+                  onClick={() => setIsSidebarOpen(false)}
+                  className="group flex items-center justify-between px-4 py-3 rounded-xl text-base font-medium text-[#0A0E14] bg-[#4CE0D2] hover:bg-[#3ec4b7] transition-all cursor-pointer"
+                >
+                  <span>{locale === 'en' ? 'Download CV' : 'تحميل السيرة الذاتية'}</span>
+                  <Download className="w-4 h-4" />
+                </a>
+              )}
             </nav>
           </div>
 
